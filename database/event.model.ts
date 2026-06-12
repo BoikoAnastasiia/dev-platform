@@ -117,6 +117,25 @@ function generateSlug(title: string): string {
     .replace(/^-|-$/g, '');
 }
 
+// Returns a slug that is unique across the collection, appending -2, -3, … on
+// collision (e.g. two events both titled "Cloud Next 2007"). The unique index on
+// `slug` remains the source of truth; this just avoids the duplicate-key error in
+// the common case. `currentId` excludes the document itself when checking.
+async function generateUniqueSlug(
+  title: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  model: any,
+  currentId?: unknown,
+): Promise<string> {
+  const base = generateSlug(title);
+  let slug = base;
+  let n = 2;
+  while (await model.findOne({ slug, _id: { $ne: currentId } }).lean()) {
+    slug = `${base}-${n++}`;
+  }
+  return slug;
+}
+
 // Normalises an incoming date string to YYYY-MM-DD; throws on unparseable input
 function normalizeDate(dateString: string): string {
   const date = new Date(dateString);
@@ -149,23 +168,19 @@ function normalizeTime(timeString: string): string {
 
 // Handles slug generation and field normalisation before every save.
 // Errors from helpers are forwarded through next() so Mongoose surfaces them correctly.
-EventSchema.pre('save', function (next) {
-  try {
-    if (this.isModified('title') || this.isNew) {
-      this.slug = generateSlug(this.title);
-    }
+EventSchema.pre('save', async function () {
+  // Slug is generated once at creation and then frozen, so editing the title
+  // later never changes the event's URL (old links keep working).
+  if (this.isNew) {
+    this.slug = await generateUniqueSlug(this.title, this.constructor, this._id);
+  }
 
-    if (this.isModified('date')) {
-      this.date = normalizeDate(this.date);
-    }
+  if (this.isModified('date')) {
+    this.date = normalizeDate(this.date);
+  }
 
-    if (this.isModified('time')) {
-      this.time = normalizeTime(this.time);
-    }
-
-    next();
-  } catch (err) {
-    next(err instanceof Error ? err : new Error(String(err)));
+  if (this.isModified('time')) {
+    this.time = normalizeTime(this.time);
   }
 });
 
